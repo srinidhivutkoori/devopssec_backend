@@ -1,0 +1,225 @@
+# CI/CD Pipeline for Real-Time Collaborative Whiteboard Backend
+# This pipeline automates the build, test, static analysis, security scanning,
+# and deployment of the Spring Boot backend application.
+# CI stages run on every push and pull request.
+# CD stages run only on push to main branch for deployment to AWS EC2.
+
+name: Backend CI/CD Pipeline
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # ============================================================
+  # CONTINUOUS INTEGRATION (CI) - Runs on all pushes and PRs
+  # ============================================================
+
+  ci-build-and-test:
+    name: CI - Build, Test and Analyze
+    runs-on: ubuntu-latest
+
+    steps:
+      # Step 1: Checkout source code from repository
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # Step 2: Set up Java 17 development environment
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: maven
+
+      # Step 3: Build the project and run unit tests
+      # The verify phase compiles, tests, and runs all bound analysis plugins
+      - name: Build and Run Tests
+        run: mvn clean verify -B
+
+      # Step 4: Run SpotBugs static analysis for bug detection
+      # SpotBugs inspects bytecode for known bug patterns (null dereferences,
+      # bad practices, security flaws, etc.)
+      - name: Run SpotBugs Analysis
+        run: mvn spotbugs:check -B
+        continue-on-error: true
+
+      # Step 5: Run PMD static analysis for code quality
+      # PMD checks for unused variables, empty catch blocks, overly complex
+      # methods, and other code style and quality issues
+      - name: Run PMD Analysis
+        run: mvn pmd:check -B
+        continue-on-error: true
+
+      # Step 6: Generate JaCoCo code coverage report
+      # JaCoCo measures the percentage of source lines and branches exercised
+      # by the test suite, producing an HTML report under target/site/jacoco/
+      - name: Generate Code Coverage Report
+        run: mvn jacoco:report -B
+
+      # Step 7: Run Semgrep security vulnerability scanning
+      # Semgrep performs static application security testing (SAST) using
+      # curated rule packs: Java language rules, security audit patterns,
+      # and OWASP Top Ten vulnerability checks
+      - name: Run Semgrep Security Scan
+        run: |
+          pip install semgrep
+          semgrep --config p/java --config p/security-audit --config p/owasp-top-ten --json --output semgrep-results.json . || true
+        continue-on-error: true
+
+      # Step 8: Upload SpotBugs analysis report as artifact
+      # Retained for 30 days so developers can review findings after a run
+      - name: Upload SpotBugs Report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: spotbugs-report
+          path: target/spotbugsXml.xml
+          retention-days: 30
+
+      # Step 9: Upload PMD analysis report as artifact
+      - name: Upload PMD Report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pmd-report
+          path: target/pmd.xml
+          retention-days: 30
+
+      # Step 10: Upload JaCoCo code coverage report as artifact
+      # The full HTML report directory is uploaded so coverage can be browsed
+      - name: Upload JaCoCo Coverage Report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: jacoco-coverage-report
+          path: target/site/jacoco/
+          retention-days: 30
+
+      # Step 11: Upload test results as artifact
+      # Surefire XML reports are uploaded for review in CI dashboards
+      - name: Upload Test Results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results
+          path: target/surefire-reports/
+          retention-days: 30
+
+  # ============================================================
+  # CONTINUOUS DEPLOYMENT (CD) - Runs only on push to main
+  # ============================================================
+
+  cd-deploy:
+    name: CD - Deploy to AWS EC2
+    runs-on: ubuntu-latest
+    # CD only runs after CI has passed successfully
+    needs: ci-build-and-test
+    # Gate: only deploy on direct pushes to main, not on pull requests
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    steps:
+      # Step 1: Checkout source code for deployment
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # Step 2: Set up Java 17 for building deployment artifact
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: maven
+
+      # Step 3: Build the deployment JAR package
+      # Tests are skipped here because they already passed in the CI job above;
+      # re-running them would waste pipeline time without adding safety
+      - name: Build Deployment Package
+        run: mvn clean package -DskipTests -B
+
+      # Step 4: Copy the built JAR to the EC2 instance via SCP
+      # This must happen BEFORE the SSH deploy step so the file is present
+      # on the server when the systemd service is restarted
+      - name: Copy JAR to EC2
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ubuntu
+          key: ${{ secrets.EC2_SSH_KEY }}
+          source: "target/*.jar"
+          target: "/tmp/whiteboard-deploy"
+
+      # Step 5: Deploy the JAR on the EC2 instance via SSH
+      # Stops the running service, replaces the JAR, and restarts the service
+      # using systemd so the application is managed as a proper Linux service
+      - name: Deploy to EC2
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ubuntu
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            # Ensure Java 17 is installed (in case user_data hasn't run yet)
+            if ! java -version 2>&1 | grep -q "17"; then
+              sudo apt-get update -y
+              sudo apt-get install -y openjdk-17-jdk-headless
+            fi
+            # Stop the currently running application gracefully
+            sudo systemctl stop whiteboard-backend || true
+            # Ensure the application deployment directory exists
+            sudo mkdir -p /opt/whiteboard-backend
+            # Find and copy the uploaded JAR to the application directory
+            sudo cp /tmp/whiteboard-deploy/target/*.jar /opt/whiteboard-backend/app.jar
+            # Create systemd service if it doesn't exist
+            if [ ! -f /etc/systemd/system/whiteboard-backend.service ]; then
+              sudo tee /etc/systemd/system/whiteboard-backend.service > /dev/null <<'SYSTEMD'
+            [Unit]
+            Description=Collaborative Whiteboard Backend Spring Boot Application
+            After=network.target
+
+            [Service]
+            Type=simple
+            User=ubuntu
+            ExecStart=/usr/bin/java -jar /opt/whiteboard-backend/app.jar --spring.profiles.active=prod
+            Restart=on-failure
+            RestartSec=10
+            StandardOutput=journal
+            StandardError=journal
+
+            [Install]
+            WantedBy=multi-user.target
+            SYSTEMD
+              sudo systemctl daemon-reload
+              sudo systemctl enable whiteboard-backend
+            fi
+            # Start the application using the systemd unit
+            sudo systemctl start whiteboard-backend
+            # Clean up the temporary deploy directory
+            rm -rf /tmp/whiteboard-deploy
+            # Give the JVM time to start before the smoke test checks health
+            sleep 10
+
+      # Step 6: Smoke test - verify the deployed application is healthy
+      # Calls the Spring Boot Actuator health endpoint; a 200 response confirms
+      # the application context started and the database connection is alive
+      - name: Smoke Test - Health Check
+        continue-on-error: true
+        run: |
+          # Allow extra time for the JVM to finish initializing
+          sleep 30
+          # Retry health check up to 3 times with 10s intervals
+          for i in 1 2 3; do
+            RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" http://${{ secrets.EC2_HOST }}:8080/actuator/health)
+            if [ "$RESPONSE" = "200" ]; then
+              echo "Health check passed (HTTP 200)"
+              curl -s http://${{ secrets.EC2_HOST }}:8080/actuator/health
+              exit 0
+            fi
+            echo "Attempt $i: HTTP $RESPONSE"
+            curl -s http://${{ secrets.EC2_HOST }}:8080/actuator/health || true
+            sleep 10
+          done
+          echo "Health check failed after 3 attempts"
+          exit 1

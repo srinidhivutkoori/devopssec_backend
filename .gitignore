@@ -1,0 +1,85 @@
+# ============================================================
+# .gitignore for Real-Time Collaborative Whiteboard Backend
+# Covers Java/Maven build artifacts, IDE metadata, OS files,
+# sensitive configuration, logs, and Terraform state files.
+# ============================================================
+
+# ----------------------------------
+# Java compiled output
+# ----------------------------------
+# Compiled class files produced by javac
+*.class
+
+# Packaged Java archives - never commit built artifacts to source control
+*.jar
+*.war
+*.ear
+
+# ----------------------------------
+# Maven build output
+# ----------------------------------
+# The entire target directory contains compiled classes, packaged JARs,
+# test results, and generated reports - all reproducible from source
+target/
+
+# ----------------------------------
+# IDE and editor files
+# ----------------------------------
+# IntelliJ IDEA project metadata and workspace files
+.idea/
+*.iml
+
+# Visual Studio Code workspace settings (editor-specific, not project config)
+.vscode/
+
+# Eclipse project metadata files
+.settings/
+.project
+.classpath
+
+# Vim swap and backup files
+*.swp
+*.swo
+*~
+
+# ----------------------------------
+# Operating system generated files
+# ----------------------------------
+# macOS Finder metadata
+.DS_Store
+
+# Windows thumbnail cache
+Thumbs.db
+
+# ----------------------------------
+# Environment variables and secrets
+# ----------------------------------
+# Never commit environment files - they may contain credentials, API keys,
+# database passwords, or other sensitive configuration values
+.env
+*.env
+
+# Local developer overrides that should not be shared across the team
+application-local.properties
+
+# ----------------------------------
+# Application logs
+# ----------------------------------
+# Log files grow large and contain runtime data - not suitable for VCS
+*.log
+logs/
+
+# ----------------------------------
+# Terraform state and lock files
+# ----------------------------------
+# The .terraform directory contains downloaded provider plugins (large binaries)
+terraform/.terraform/
+
+# Terraform state files contain sensitive infrastructure details including
+# resource IDs, IP addresses, and potentially secrets - never commit these
+terraform/*.tfstate
+terraform/*.tfstate.backup
+
+# The lock file pins provider versions and is machine-generated;
+# teams should use a remote backend and shared lock instead
+terraform/.terraform.lock.hcl
